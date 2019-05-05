@@ -4,7 +4,6 @@ import (
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
-
 	"github.com/mholt/caddy"
 )
 
@@ -17,36 +16,20 @@ func init() {
 	})
 }
 
-//func periodicHostsUpdate(h *Hosts) chan bool {
-//	parseChan := make(chan bool)
-//
-//	if h.options.reload == durationOf0s {
-//		return parseChan
-//	}
-//
-//	go func() {
-//		ticker := time.NewTicker(h.options.reload)
-//		for {
-//			select {
-//			case <-parseChan:
-//				return
-//			case <-ticker.C:
-//				h.readHosts()
-//			}
-//		}
-//	}()
-//	return parseChan
-//}
-
 func setup(c *caddy.Controller) error {
-	c.Next() // 'threebot'
-	if c.NextArg() {
-		return plugin.Error("threebot", c.ArgErr())
+	r, err := redisParse(c)
+	if err != nil {
+		return plugin.Error("threebot", err)
 	}
 
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return Threebot{}
+		r.Next = next
+		return r
 	})
 
 	return nil
+}
+
+func redisParse(c *caddy.Controller) (*Threebot, error) {
+	return &Threebot{}, nil
 }

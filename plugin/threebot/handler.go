@@ -1,61 +1,55 @@
 package threebot
 
 import (
+	"fmt"
 	// "fmt"
-	"time"
-
-	"github.com/coredns/coredns/plugin"
+	//"github.com/coredns/coredns/plugin"
 	"github.com/miekg/dns"
-	"golang.org/x/net/context"
+	"context"
 	"github.com/coredns/coredns/request"
 )
 
 // ServeDNS implements the plugin.Handler interface.
-func (threebot *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
-	// fmt.Println("serveDNS")
+func (threebot *Threebot) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	fmt.Println("serveDNS")
 	state := request.Request{W: w, Req: r}
-
+	zone := "grid.tf."
 	qname := state.Name()
 	qtype := state.Type()
 
-	// fmt.Println("name : ", qname)
-	// fmt.Println("type : ", qtype)
+	fmt.Println("name : ", qname)
+	fmt.Println("type : ", qtype)
 
-	if time.Since(threebot.LastZoneUpdate) > zoneUpdateTime {
-		threebot.LoadZones()
-	}
+	//
+	//zone = plugin.Zones(threebot.Zones).Matches(qname)
+	//fmt.Println("zone : ", zone)
+	//if zone == "" {
+	//	return plugin.NextOrFailure(qname, threebot.Next, ctx, w, r)
+	//}
 
-	zone := plugin.Zones(threebot.Zones).Matches(qname)
-	// fmt.Println("zone : ", zone)
-	if zone == "" {
-		return plugin.NextOrFailure(qname, threebot.Next, ctx, w, r)
-	}
 
-	z := threebot.load(zone)
-	if z == nil {
-		return threebot.errorResponse(state, zone, dns.RcodeServerFailure, nil)
-	}
-
-	location := threebot.findLocation(qname, z)
-	if len(location) == 0 { // empty, no results
-		return threebot.errorResponse(state, zone, dns.RcodeNameError, nil)
-	}
+	location := threebot.findLocation(qname, zone)
+	fmt.Println("LOCATION SERVDNS: ", location)
+	//if len(location) == 0 { // empty, no results
+	//	return threebot.errorResponse(state, zone, dns.RcodeNameError, nil)
+	//}
 	// fmt.Println("location : ", location)
 
 	answers := make([]dns.RR, 0, 10)
 	extras := make([]dns.RR, 0, 10)
 
-	record := threebot.get(location, z)
+	record := threebot.get(location)
+	fmt.Println("Record: ", record)
+	fmt.Println("RECORD: ",  record.A )
 
 	switch qtype {
 	case "A":
-		answers, extras = threebot.A(qname, z, record)
+		answers, extras = threebot.A(qname, "", record)
 	case "AAAA":
-		answers, extras = threebot.AAAA(qname, z, record)
+		answers, extras = threebot.AAAA(qname, "", record)
 	case "CNAME":
-		answers, extras = threebot.CNAME(qname, z, record)
-	//case "TXT":
-	//	answers, extras = threebot.TXT(qname, z, record)
+		answers, extras = threebot.CNAME(qname, "", record)
+
 	//case "NS":
 	//	answers, extras = threebot.NS(qname, z, record)
 	//case "MX":
@@ -74,19 +68,23 @@ func (threebot *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dn
 	m.SetReply(r)
 	m.Authoritative, m.RecursionAvailable, m.Compress = true, false, true
 
+
 	m.Answer = append(m.Answer, answers...)
 	m.Extra = append(m.Extra, extras...)
 
+	//fmt.Printf("%v %v %v \n", m, m.Answer, m.Extra)
+
 	state.SizeAndDo(m)
-	m, _ = state.Scrub(m)
+	m = state.Scrub(m)
+	fmt.Println("WRITING MSG NOW", m)
 	w.WriteMsg(m)
 	return dns.RcodeSuccess, nil
 }
 
 // Name implements the Handler interface.
-func (threebot *Redis) Name() string { return "threebot" }
+func (threebot *Threebot) Name() string { return "threebot" }
 
-func (threebot *Redis) errorResponse(state request.Request, zone string, rcode int, err error) (int, error) {
+func (threebot *Threebot) errorResponse(state request.Request, zone string, rcode int, err error) (int, error) {
 	m := new(dns.Msg)
 	m.SetRcode(state.Req, rcode)
 	m.Authoritative, m.RecursionAvailable, m.Compress = true, false, true

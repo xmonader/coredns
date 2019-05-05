@@ -1,36 +1,30 @@
 package threebot
 
 import (
-	"time"
 	"encoding/json"
-	"strings"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"strings"
+	"time"
 	"net"
-
 	"github.com/miekg/dns"
-
 	"github.com/coredns/coredns/plugin"
+	deb "runtime/debug"
 
-	redisCon "github.com/garyburd/redigo/redis"
 )
 
 type Threebot struct {
 	Next           plugin.Handler
-	Pool           *redisCon.Pool
-	ThreebotAddress   string
-	ThreebotPassword  string
 	connectTimeout int
 	readTimeout    int
-	keyPrefix      string
-	keySuffix      string
 	Ttl            uint32
 	Zones          []string
-	LastZoneUpdate time.Time
 }
 
 type Zone struct {
 	Name      string
-	Locations map[string]struct{}
+	Locations map[string]Record
 }
 
 type Record struct {
@@ -57,33 +51,13 @@ type CNAME_Record struct {
 
 
 func (threebot *Threebot) LoadZones() {
-	var (
-		reply interface{}
-		err error
-		zones []string
-	)
+	zones := []string{"grid.tf."}
 
-	conn := threebot.Pool.Get()
-	if conn == nil {
-		fmt.Println("error connecting to threebot")
-		return
-	}
-	defer conn.Close()
-
-	reply, err = conn.Do("KEYS", threebot.keyPrefix + "*" + threebot.keySuffix)
-	if err != nil {
-		return
-	}
-	zones, err = redisCon.Strings(reply, nil)
-	for i, _ := range zones {
-		zones[i] = strings.TrimPrefix(zones[i], threebot.keyPrefix)
-		zones[i] = strings.TrimSuffix(zones[i], threebot.keySuffix)
-	}
-	threebot.LastZoneUpdate = time.Now()
 	threebot.Zones = zones
 }
 
-func (threebot *Threebot) A(name string, z *Zone, record *Record) (answers, extras []dns.RR) {
+func (threebot *Threebot) A(name, z string,  record *Record) (answers, extras []dns.RR) {
+	fmt.Println("LEN RECORD A: ", len(record.A))
 	for _, a := range record.A {
 		if a.Ip == nil {
 			continue
@@ -91,13 +65,14 @@ func (threebot *Threebot) A(name string, z *Zone, record *Record) (answers, extr
 		r := new(dns.A)
 		r.Hdr = dns.RR_Header{Name: name, Rrtype: dns.TypeA,
 			Class: dns.ClassINET, Ttl: threebot.minTtl(a.Ttl)}
+		fmt.Println("IP IN A FUNCT: ", string(a.Ip)	)
 		r.A = a.Ip
 		answers = append(answers, r)
 	}
 	return
 }
 
-func (threebot Threebot) AAAA(name string, z *Zone, record *Record) (answers, extras []dns.RR) {
+func (threebot Threebot) AAAA(name, z string,  record *Record) (answers, extras []dns.RR) {
 	for _, aaaa := range record.AAAA {
 		if aaaa.Ip == nil {
 			continue
@@ -111,7 +86,7 @@ func (threebot Threebot) AAAA(name string, z *Zone, record *Record) (answers, ex
 	return
 }
 
-func (threebot *Threebot) CNAME(name string, z *Zone, record *Record) (answers, extras []dns.RR) {
+func (threebot *Threebot) CNAME(name, z string,  record *Record) (answers, extras []dns.RR) {
 	for _, cname := range record.CNAME {
 		if len(cname.Host) == 0 {
 			continue
@@ -124,25 +99,26 @@ func (threebot *Threebot) CNAME(name string, z *Zone, record *Record) (answers, 
 	}
 	return
 }
-
-func (threebot *Threebot) hosts(name string, z *Zone) []dns.RR {
-	var (
-		record *Record
-		answers []dns.RR
-	)
-	location := threebot.findLocation(name, z)
-	if location == "" {
-		return nil
-	}
-	record = threebot.get(location, z)
-	a, _ := threebot.A(name, z, record)
-	answers = append(answers, a...)
-	aaaa, _ := threebot.AAAA(name, z, record)
-	answers = append(answers, aaaa...)
-	cname, _ := threebot.CNAME(name, z, record)
-	answers = append(answers, cname...)
-	return answers
-}
+//
+//func (threebot *Threebot) hosts(name, z string) []dns.RR {
+//	fmt.Println("calling hosts..")
+//	var (
+//		record *Record
+//		answers []dns.RR
+//	)
+//	location := threebot.findLocation(name, z)
+//	if location == "" {
+//		return nil
+//	}
+//	record = threebot.get(location)
+//	a, _ := threebot.A(name, z, record)
+//	answers = append(answers, a...)
+//	aaaa, _ := threebot.AAAA(name, z, record)
+//	answers = append(answers, aaaa...)
+//	cname, _ := threebot.CNAME(name, z, record)
+//	answers = append(answers, cname...)
+//	return answers
+//}
 
 func (threebot *Threebot) minTtl(ttl uint32) uint32 {
 	if threebot.Ttl == 0 && ttl == 0 {
@@ -160,194 +136,63 @@ func (threebot *Threebot) minTtl(ttl uint32) uint32 {
 	return  ttl
 }
 
-func (threebot *Threebot) findLocation(query string, z *Zone) string {
-	var (
-		ok bool
-		closestEncloser, sourceOfSynthesis string
-	)
-
+func (threebot *Threebot) findLocation(query, zoneName string) string {
 	// request for zone records
-	if query == z.Name {
+	fmt.Println("findLocation :" , query, " " , zoneName)
+	if query == zoneName {
+		fmt.Println("findlocation returning zoneName: ")
 		return query
 	}
 
-	query = strings.TrimSuffix(query, "." + z.Name)
-
-	if _, ok = z.Locations[query]; ok {
+	query = strings.TrimSuffix(query, "." + zoneName)
+	fmt.Println("QUERY NOW: ", query)
+	if strings.Count(query, ".") == 1{
+		fmt.Println("returning query: ", query)
 		return query
-	}
-
-	closestEncloser, sourceOfSynthesis, ok = splitQuery(query)
-	for ok {
-		ceExists := keyMatches(closestEncloser, z) || keyExists(closestEncloser, z)
-		ssExists := keyExists(sourceOfSynthesis, z)
-		if ceExists {
-			if ssExists {
-				return sourceOfSynthesis
-			} else {
-				return ""
-			}
-		} else {
-			closestEncloser, sourceOfSynthesis, ok = splitQuery(closestEncloser)
-		}
 	}
 	return ""
 }
 
-func (threebot *Threebot) get(key string, z *Zone) *Record {
-	var (
-		err error
-		reply interface{}
-		val string
-	)
-	conn := threebot.Pool.Get()
-	if conn == nil {
-		fmt.Println("error connecting to threebot")
-		return nil
-	}
-	defer conn.Close()
+func (threebot *Threebot) get(key string) *Record {
+	deb.PrintStack()
 
-	var label string
-	if key == z.Name {
-		label = "@"
-	} else {
-		label = key
+	fmt.Println("threebot get: ", key)
+	// check errors.
+	/*
+	https://explorer.testnet.threefoldtoken.com/explorer/whois/3bot/zaibon.tf3bot
+	{"record":{"id":1,"addresses":["3bot.zaibon.be"],"names":["zaibon.tf3bot"],"publickey":"ed25519:ea07bcf776736672370866151fc6850347eae36dda2a0653113102ea84d8ac1c","expiration":1559052900}}
+	*/
+	type ThreeBotRecord struct {
+		Addresses []string `json:"addresses"`
+		Names     []string `json:"names"`
+	}
+	type WhoIsResponse struct{
+		ThreeBotRecord `json:"record"`
 	}
 
-	reply, err = conn.Do("HGET", threebot.keyPrefix + z.Name + threebot.keySuffix, label)
-	if err != nil {
-		return nil
-	}
-	val, err = redisCon.String(reply, nil)
-	if err != nil {
-		return nil
-	}
-	r := new(Record)
-	err = json.Unmarshal([]byte(val), r)
-	if err != nil {
-		fmt.Println("parse error : ", val, err)
-		return nil
-	}
-	return r
-}
+	resp, err := http.Get("https://explorer.testnet.threefoldtoken.com/explorer/whois/3bot/"+key)
+	if resp.StatusCode==200{
+		body, err := ioutil.ReadAll(resp.Body)
+		fmt.Println("RESP: ",string(body))
 
-func keyExists(key string, z *Zone) bool {
-	_, ok := z.Locations[key]
-	return ok
-}
-
-func keyMatches(key string, z *Zone) bool {
-	for value := range z.Locations {
-		if strings.HasSuffix(value, key) {
-			return true
+		if err != nil {
+			panic(err.Error())
 		}
+		whoisResp := new(WhoIsResponse)
+		err = json.Unmarshal([]byte(body),&whoisResp)
+		// check err
+		fmt.Println(err)
 	}
-	return false
-}
-
-func splitQuery(query string) (string, string, bool) {
-	if query == "" {
-		return "", "", false
+	if err!=nil {
+		// todo
 	}
-	var (
-		splits []string
-		closestEncloser string
-		sourceOfSynthesis string
-	)
-	splits = strings.SplitAfterN(query, ".", 2)
-	if len(splits) == 2 {
-		closestEncloser = splits[1]
-		sourceOfSynthesis = "*." + closestEncloser
-	} else {
-		closestEncloser = ""
-		sourceOfSynthesis = "*"
-	}
-	return closestEncloser, sourceOfSynthesis, true
-}
-
-func (threebot *Threebot) connect() {
-	threebot.Pool = &redisCon.Pool{
-		Dial: func () (redisCon.Conn, error) {
-			opts := []redisCon.DialOption{}
-			if threebot.ThreebotPassword != "" {
-				opts = append(opts, redisCon.DialPassword(threebot.ThreebotPassword))
-			}
-			if threebot.connectTimeout != 0 {
-				opts = append(opts, redisCon.DialConnectTimeout(time.Duration(threebot.connectTimeout)*time.Millisecond))
-			}
-			if threebot.readTimeout != 0 {
-				opts = append(opts, redisCon.DialReadTimeout(time.Duration(threebot.readTimeout)*time.Millisecond))
-			}
-
-			return redisCon.Dial("tcp", threebot.ThreebotAddress, opts...)
+	reply := Record{
+		A: []A_Record{
+			{Ip: []byte("192.52.12.4"), Ttl:500},
 		},
 	}
-}
-
-func (threebot *Threebot) save(zone string, subdomain string, value string) error {
-	var err error
-
-	conn := threebot.Pool.Get()
-	if conn == nil {
-		fmt.Println("error connecting to threebot")
-		return nil
-	}
-	defer conn.Close()
-
-	_, err = conn.Do("HSET", threebot.keyPrefix + zone + threebot.keySuffix, subdomain, value)
-	return err
-}
-
-func (threebot *Threebot) load(zone string) *Zone {
-	var (
-		reply interface{}
-		err error
-		vals []string
-	)
-
-	conn := threebot.Pool.Get()
-	if conn == nil {
-		fmt.Println("error connecting to threebot")
-		return nil
-	}
-	defer conn.Close()
-
-	reply, err = conn.Do("HKEYS", threebot.keyPrefix + zone + threebot.keySuffix)
-	if err != nil {
-		return nil
-	}
-	z := new(Zone)
-	z.Name = zone
-	vals, err = redisCon.Strings(reply, nil)
-	if err != nil {
-		return nil
-	}
-	z.Locations = make(map[string]struct{})
-	for _, val := range vals {
-		z.Locations[val] = struct{}{}
-	}
-
-	return z
-}
-
-func split255(s string) []string {
-	if len(s) < 255 {
-		return []string{s}
-	}
-	sx := []string{}
-	p, i := 0, 255
-	for {
-		if i <= len(s) {
-			sx = append(sx, s[p:i])
-		} else {
-			sx = append(sx, s[p:])
-			break
-
-		}
-		p, i = p+255, i+255
-	}
-
-	return sx
+	fmt.Println("returning reply: %v ", reply)
+	return &reply
 }
 
 const (
