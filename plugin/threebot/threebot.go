@@ -3,15 +3,12 @@ package threebot
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/coredns/coredns/plugin"
+	"github.com/miekg/dns"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"strings"
-	"time"
-	"net"
-	"github.com/miekg/dns"
-	"github.com/coredns/coredns/plugin"
-	deb "runtime/debug"
-
 )
 
 type Threebot struct {
@@ -57,7 +54,6 @@ func (threebot *Threebot) LoadZones() {
 }
 
 func (threebot *Threebot) A(name, z string,  record *Record) (answers, extras []dns.RR) {
-	fmt.Println("LEN RECORD A: ", len(record.A))
 	for _, a := range record.A {
 		if a.Ip == nil {
 			continue
@@ -65,7 +61,6 @@ func (threebot *Threebot) A(name, z string,  record *Record) (answers, extras []
 		r := new(dns.A)
 		r.Hdr = dns.RR_Header{Name: name, Rrtype: dns.TypeA,
 			Class: dns.ClassINET, Ttl: threebot.minTtl(a.Ttl)}
-		fmt.Println("IP IN A FUNCT: ", string(a.Ip)	)
 		r.A = a.Ip
 		answers = append(answers, r)
 	}
@@ -99,26 +94,6 @@ func (threebot *Threebot) CNAME(name, z string,  record *Record) (answers, extra
 	}
 	return
 }
-//
-//func (threebot *Threebot) hosts(name, z string) []dns.RR {
-//	fmt.Println("calling hosts..")
-//	var (
-//		record *Record
-//		answers []dns.RR
-//	)
-//	location := threebot.findLocation(name, z)
-//	if location == "" {
-//		return nil
-//	}
-//	record = threebot.get(location)
-//	a, _ := threebot.A(name, z, record)
-//	answers = append(answers, a...)
-//	aaaa, _ := threebot.AAAA(name, z, record)
-//	answers = append(answers, aaaa...)
-//	cname, _ := threebot.CNAME(name, z, record)
-//	answers = append(answers, cname...)
-//	return answers
-//}
 
 func (threebot *Threebot) minTtl(ttl uint32) uint32 {
 	if threebot.Ttl == 0 && ttl == 0 {
@@ -138,26 +113,19 @@ func (threebot *Threebot) minTtl(ttl uint32) uint32 {
 
 func (threebot *Threebot) findLocation(query, zoneName string) string {
 	// request for zone records
-	fmt.Println("findLocation :" , query, " " , zoneName)
 	if query == zoneName {
-		fmt.Println("findlocation returning zoneName: ")
 		return query
 	}
 
 	query = strings.TrimSuffix(query, "." + zoneName)
-	fmt.Println("QUERY NOW: ", query)
 	if strings.Count(query, ".") == 1{
-		fmt.Println("returning query: ", query)
 		return query
 	}
 	return ""
 }
 
 func (threebot *Threebot) get(key string) *Record {
-	deb.PrintStack()
 
-	fmt.Println("threebot get: ", key)
-	// check errors.
 	/*
 	https://explorer.testnet.threefoldtoken.com/explorer/whois/3bot/zaibon.tf3bot
 	{"record":{"id":1,"addresses":["3bot.zaibon.be"],"names":["zaibon.tf3bot"],"publickey":"ed25519:ea07bcf776736672370866151fc6850347eae36dda2a0653113102ea84d8ac1c","expiration":1559052900}}
@@ -173,8 +141,6 @@ func (threebot *Threebot) get(key string) *Record {
 	resp, err := http.Get("https://explorer.testnet.threefoldtoken.com/explorer/whois/3bot/"+key)
 	if resp.StatusCode==200{
 		body, err := ioutil.ReadAll(resp.Body)
-		fmt.Println("RESP: ",string(body))
-
 		if err != nil {
 			panic(err.Error())
 		}
@@ -186,17 +152,16 @@ func (threebot *Threebot) get(key string) *Record {
 	if err!=nil {
 		// todo
 	}
-	reply := Record{
-		A: []A_Record{
-			{Ip: []byte("192.52.12.4"), Ttl:500},
-		},
+
+	// TODO: handle multiple records and agree on standard return of IPv4 for locations where 3bots are running on.
+	rec := new(Record)
+
+	rec.A = []A_Record{
+		{Ip: net.ParseIP("8.8.8.8"), Ttl:300},
 	}
-	fmt.Println("returning reply: %v ", reply)
-	return &reply
+	return rec
 }
 
 const (
 	defaultTtl = 360
-	hostmaster = "hostmaster"
-	zoneUpdateTime = 10*time.Minute
 )
