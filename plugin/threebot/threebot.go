@@ -166,7 +166,7 @@ func (threebot *Threebot) get(key string) (*Record, error) {
 		return rec, nil
 	}
 
-	return nil, fmt.Errorf("couldn't get record for 3bot with key ", key)
+	return nil, fmt.Errorf("couldn't get record for 3bot with key %s ", key)
 }
 
 const (
