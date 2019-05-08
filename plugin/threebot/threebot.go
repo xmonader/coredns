@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/coredns/coredns/plugin"
 	"github.com/miekg/dns"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"strings"
@@ -129,37 +128,44 @@ func (threebot *Threebot) get(key string) (*Record, error) {
 		ThreeBotRecord `json:"record"`
 	}
 	// whoever responds is enough
+	rec := new(Record)
+	rec.A = []A_Record{}
+	rec.AAAA = []AAAA_Record{}
 	for _, explorer := range threebot.Explorers {
 		whoisUrl := explorer+"/explorer/whois/3bot/"+key
-		resp, _ := http.Get(whoisUrl)
+		resp, error := http.Get(whoisUrl)
+		defer resp.Body.Close()
+
+		if error != nil {
+			return nil, error
+		}
 		if resp.StatusCode==200{
-			body, error := ioutil.ReadAll(resp.Body)
-			if error != nil {
-				return nil, error
-			}
 			whoisResp := new(WhoIsResponse)
-			error = json.Unmarshal([]byte(body),&whoisResp)
-			// check err
-			if error != nil {
-				return nil, error
+			if err := json.NewDecoder(resp.Body).Decode(whoisResp); err != nil {
+				continue
 			}
-
 			// TODO: handle multiple records and agree on standard return of IPv4 for locations where 3bots are running on.
-			rec := new(Record)
 			for _, addr := range(whoisResp.Addresses) {
-				// return on the first valid address.
-				theIp := net.ParseIP(addr)
-				if theIp == nil {
-					return nil, fmt.Errorf("couldn't parse address ", addr, "  of record for 3bot with key ", key)
-				}
-				rec.A = []A_Record{
-					{Ip: theIp, Ttl:300},
-				}
-				return rec, nil
-			}
 
+				theIp := net.ParseIP(addr)
+				if theIp != nil {
+					if  theIp.To4() != nil {
+						rec.A = append(rec.A, A_Record{Ip: theIp, Ttl: 300})
+						continue
+					}
+					if  theIp.To16() != nil {
+						rec.AAAA = append(rec.AAAA, AAAA_Record{Ip: theIp})
+						continue
+					}
+				}
+				// TODO: hostnames.
+			}
 		}
 	}
+	if len(rec.A) + len(rec.AAAA) > 0 {
+		return rec, nil
+	}
+
 	return nil, fmt.Errorf("couldn't get record for 3bot with key ", key)
 }
 
