@@ -13,10 +13,9 @@ import (
 
 type Threebot struct {
 	Next           plugin.Handler
-	connectTimeout int
-	readTimeout    int
 	Ttl            uint32
 	Zones          []string
+	Explorers	   []string
 }
 
 type Zone struct {
@@ -44,13 +43,6 @@ type AAAA_Record struct {
 type CNAME_Record struct {
 	Ttl  uint32 `json:"ttl,omitempty"`
 	Host string `json:"host"`
-}
-
-
-func (threebot *Threebot) LoadZones() {
-	zones := []string{"grid.tf."}
-
-	threebot.Zones = zones
 }
 
 func (threebot *Threebot) A(name, z string,  record *Record) (answers, extras []dns.RR) {
@@ -124,8 +116,7 @@ func (threebot *Threebot) findLocation(query, zoneName string) string {
 	return ""
 }
 
-func (threebot *Threebot) get(key string) *Record {
-
+func (threebot *Threebot) get(key string) (*Record, error) {
 	/*
 	https://explorer.testnet.threefoldtoken.com/explorer/whois/3bot/zaibon.tf3bot
 	{"record":{"id":1,"addresses":["3bot.zaibon.be"],"names":["zaibon.tf3bot"],"publickey":"ed25519:ea07bcf776736672370866151fc6850347eae36dda2a0653113102ea84d8ac1c","expiration":1559052900}}
@@ -137,29 +128,39 @@ func (threebot *Threebot) get(key string) *Record {
 	type WhoIsResponse struct{
 		ThreeBotRecord `json:"record"`
 	}
+	// whoever responds is enough
+	for _, explorer := range threebot.Explorers {
+		whoisUrl := explorer+"/explorer/whois/3bot/"+key
+		resp, _ := http.Get(whoisUrl)
+		if resp.StatusCode==200{
+			body, error := ioutil.ReadAll(resp.Body)
+			if error != nil {
+				return nil, error
+			}
+			whoisResp := new(WhoIsResponse)
+			error = json.Unmarshal([]byte(body),&whoisResp)
+			// check err
+			if error != nil {
+				return nil, error
+			}
 
-	resp, err := http.Get("https://explorer.testnet.threefoldtoken.com/explorer/whois/3bot/"+key)
-	if resp.StatusCode==200{
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			panic(err.Error())
+			// TODO: handle multiple records and agree on standard return of IPv4 for locations where 3bots are running on.
+			rec := new(Record)
+			for _, addr := range(whoisResp.Addresses) {
+				// return on the first valid address.
+				theIp := net.ParseIP(addr)
+				if theIp == nil {
+					return nil, fmt.Errorf("couldn't parse address ", addr, "  of record for 3bot with key ", key)
+				}
+				rec.A = []A_Record{
+					{Ip: theIp, Ttl:300},
+				}
+				return rec, nil
+			}
+
 		}
-		whoisResp := new(WhoIsResponse)
-		err = json.Unmarshal([]byte(body),&whoisResp)
-		// check err
-		fmt.Println(err)
 	}
-	if err!=nil {
-		// todo
-	}
-
-	// TODO: handle multiple records and agree on standard return of IPv4 for locations where 3bots are running on.
-	rec := new(Record)
-
-	rec.A = []A_Record{
-		{Ip: net.ParseIP("8.8.8.8"), Ttl:300},
-	}
-	return rec
+	return nil, fmt.Errorf("couldn't get record for 3bot with key ", key)
 }
 
 const (

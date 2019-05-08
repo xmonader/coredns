@@ -19,7 +19,10 @@ func (threebot *Threebot) ServeDNS(ctx context.Context, w dns.ResponseWriter, r 
 	answers := make([]dns.RR, 0, 10)
 	extras := make([]dns.RR, 0, 10)
 
-	record := threebot.get(location)
+	record, err := threebot.get(location)
+	if err != nil {
+		return threebot.errorResponse(state, zone, dns.RcodeBadName, nil)
+	}
 
 	switch qtype {
 	case "A":
