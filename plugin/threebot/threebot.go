@@ -8,7 +8,16 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"github.com/patrickmn/go-cache"
+	"time"
 )
+
+
+var threebotCache *cache.Cache
+
+func init(){
+	threebotCache = cache.New(5*time.Minute, 10*time.Minute)
+}
 
 type Threebot struct {
 	Next           plugin.Handler
@@ -16,6 +25,7 @@ type Threebot struct {
 	Zones          []string
 	Explorers	   []string
 }
+
 
 type Zone struct {
 	Name      string
@@ -114,23 +124,51 @@ func (threebot *Threebot) findLocation(query, zoneName string) string {
 	}
 	return ""
 }
+type ThreeBotRecord struct {
+	Addresses []string `json:"addresses"`
+	Names     []string `json:"names"`
+}
+type WhoIsResponse struct{
+	ThreeBotRecord `json:"record"`
+}
+func recordsFromWhoIsResponse(whoisResp *WhoIsResponse)(*Record, error){
+	rec := new(Record)
+	rec.A = []A_Record{}
+	rec.AAAA = []AAAA_Record{}
+	for _, addr := range(whoisResp.Addresses) {
+
+		theIp := net.ParseIP(addr)
+		if theIp != nil {
+			if  theIp.To4() != nil {
+				rec.A = append(rec.A, A_Record{Ip: theIp, Ttl: 300})
+				continue
+			}
+			if  theIp.To16() != nil {
+				rec.AAAA = append(rec.AAAA, AAAA_Record{Ip: theIp})
+				continue
+			}
+		}
+		// TODO: hostnames.
+	}
+	if len(rec.A) + len(rec.AAAA) > 0 {
+		return rec, nil
+	}
+	return nil, fmt.Errorf("couldn't find any records")
+
+}
 
 func (threebot *Threebot) get(key string) (*Record, error) {
 	/*
 	https://explorer.testnet.threefoldtoken.com/explorer/whois/3bot/zaibon.tf3bot
 	{"record":{"id":1,"addresses":["3bot.zaibon.be"],"names":["zaibon.tf3bot"],"publickey":"ed25519:ea07bcf776736672370866151fc6850347eae36dda2a0653113102ea84d8ac1c","expiration":1559052900}}
 	*/
-	type ThreeBotRecord struct {
-		Addresses []string `json:"addresses"`
-		Names     []string `json:"names"`
-	}
-	type WhoIsResponse struct{
-		ThreeBotRecord `json:"record"`
-	}
+
 	// whoever responds is enough
-	rec := new(Record)
-	rec.A = []A_Record{}
-	rec.AAAA = []AAAA_Record{}
+	var rec *Record
+	if res, found := threebotCache.Get(key) ; found {
+		return res.(*Record), nil
+	}
+
 	for _, explorer := range threebot.Explorers {
 		whoisUrl := explorer+"/explorer/whois/3bot/"+key
 		resp, error := http.Get(whoisUrl)
@@ -144,26 +182,13 @@ func (threebot *Threebot) get(key string) (*Record, error) {
 			if err := json.NewDecoder(resp.Body).Decode(whoisResp); err != nil {
 				continue
 			}
-			// TODO: handle multiple records and agree on standard return of IPv4 for locations where 3bots are running on.
-			for _, addr := range(whoisResp.Addresses) {
-
-				theIp := net.ParseIP(addr)
-				if theIp != nil {
-					if  theIp.To4() != nil {
-						rec.A = append(rec.A, A_Record{Ip: theIp, Ttl: 300})
-						continue
-					}
-					if  theIp.To16() != nil {
-						rec.AAAA = append(rec.AAAA, AAAA_Record{Ip: theIp})
-						continue
-					}
-				}
-				// TODO: hostnames.
+			rec, error = recordsFromWhoIsResponse(whoisResp)
+			if error != nil {
+				continue 	// try the next explorer.
 			}
+			threebotCache.Set(key, rec, time.Second*time.Duration(threebot.Ttl))
+			return rec, nil
 		}
-	}
-	if len(rec.A) + len(rec.AAAA) > 0 {
-		return rec, nil
 	}
 
 	return nil, fmt.Errorf("couldn't get record for 3bot with key %s ", key)
